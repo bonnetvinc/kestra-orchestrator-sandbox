@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+vars:
+  GREETING: Hello, world!
+
+tasks:
+  docker-compose:
+    desc: Lancement de kestra avec docker-compose
+    cmds:
+      - docker-compose up -d
+    silent: true
+
+  down:
+    desc: Arrêter les services Kestra
+    cmds:
+      - docker-compose down
+    silent: true
+
+  down-prune:
+    desc: Arrêter et supprimer les volumes Kestra
+    cmds:
+      - docker-compose down -v
+    silent: true
+
+  restart:
+    desc: Redémarrer les services Kestra
+    cmds:
+      - docker-compose restart
+    silent: true
+
+  logs:
+    desc: Afficher les logs de Kestra
+    cmds:
+      - docker-compose logs -f
+    silent: false
+
+  ps:
+    desc: Lister les conteneurs Kestra
+    cmds:
+      - docker-compose ps
+    silent: false
+
+  prune-volumes:
+    desc: Supprimer tous les volumes non utilisés (danger)
+    cmds:
+      - docker volume prune -f
+    silent: false

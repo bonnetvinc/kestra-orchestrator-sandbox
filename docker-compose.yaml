@@ -1,0 +1,20 @@
+# =========================
+# Kestra Docker Compose
+# =========================
+version: '3.8'
+services:
+  kestra:
+    image: kestra/kestra:latest
+    container_name: kestra
+    restart: always
+    user: root
+    command: server local
+    ports:
+      - "8080:8080"
+    volumes:
+      - kestra_data:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+    pull_policy: always
+volumes:
+  kestra_data:
