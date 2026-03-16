@@ -1,0 +1,21 @@
+id: hello-world
+namespace: demo
+
+description: |
+  Flow de démo — vérifie que l'instance Kestra fonctionne correctement.
+
+labels:
+  env: dev
+  type: smoke-test
+
+tasks:
+  - id: hello
+    type: io.kestra.plugin.core.log.Log
+    message: "👋 Hello World depuis Kestra ! ({{ execution.id }})"
+
+  - id: display_context
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      Flow     : {{ flow.namespace }}/{{ flow.id }}
+      Date     : {{ execution.startDate }}
+      Trigger  : {{ trigger.type | default('manual') }}

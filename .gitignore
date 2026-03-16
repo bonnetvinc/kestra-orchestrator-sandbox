@@ -1,0 +1,20 @@
+# Secrets — NE JAMAIS COMMITTER
+.env.local
+.env.secrets
+
+# Docker volumes locaux
+/tmp/kestra-wd/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

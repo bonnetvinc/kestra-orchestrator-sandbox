@@ -6,9 +6,9 @@ volumes:
 
 services:
   postgres:
-    image: postgres
+    image: postgres:16
     volumes:
-      - postgres-data:/var/lib/postgresql/18/data
+      - postgres-data:/var/lib/postgresql/data
     environment:
       POSTGRES_DB: kestra
       POSTGRES_USER: kestra
@@ -21,8 +21,6 @@ services:
 
   kestra-scheduler:
     image: kestra/kestra:latest
-    deploy:
-      replicas: 2
     pull_policy: if_not_present
     user: "root"
     command: server scheduler
@@ -41,8 +39,9 @@ services:
         kestra:
           server:
             basic-auth:
-              username: "admin@kestra.io"
-              password: Kestr!!a123
+              enabled: true
+              username: "${KESTRA_USER:-admin@kestra.io}"
+              password: "${KESTRA_PASSWORD:-Kestr!!a123}"
           repository:
             type: postgres
           storage:
@@ -54,34 +53,28 @@ services:
           tasks:
             tmp-dir:
               path: /tmp/kestra-wd/tmp
-    ports:
-      - "8082-8083:8081"
+          url: "${KESTRA_URL:-http://localhost:8080}"
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
 
   kestra-worker:
     image: kestra/kestra:latest
-    deploy:
-      replicas: 2
     pull_policy: if_not_present
     user: "root"
-    command: server worker
+    command: server worker --thread 8
     volumes:
       - kestra-data:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/kestra-wd:/tmp/kestra-wd
     environment:
       KESTRA_CONFIGURATION: *common_configuration
-    ports:
-      - "8084-8085:8081"
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
+
   kestra-executor:
     image: kestra/kestra:latest
-    deploy:
-      replicas: 2
     pull_policy: if_not_present
     user: "root"
     command: server executor
@@ -91,15 +84,12 @@ services:
       - /tmp/kestra-wd:/tmp/kestra-wd
     environment:
       KESTRA_CONFIGURATION: *common_configuration
-    ports:
-      - "8086-8087:8081"
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
+
   kestra-webserver:
     image: kestra/kestra:latest
-    deploy:
-      replicas: 1
     pull_policy: if_not_present
     user: "root"
     command: server webserver
@@ -109,10 +99,10 @@ services:
       - /tmp/kestra-wd:/tmp/kestra-wd
     environment:
       KESTRA_CONFIGURATION: *common_configuration
-      KESTRA_URL: http://localhost:8080/
+      KESTRA_URL: "${KESTRA_URL:-http://localhost:8080}"
     ports:
-      - "8080:8080"
+      - "${KESTRA_PORT:-8080}:8080"
       - "8081:8081"
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy

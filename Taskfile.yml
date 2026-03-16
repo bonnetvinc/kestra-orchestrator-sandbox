@@ -1,49 +1,281 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
 
-version: '3'
+dotenv: [".env.local", "core/.env.example"]
 
 vars:
-  GREETING: Hello, world!
+  FLOWS_DIR: flows
+  TESTS_DIR: tests
+  KESTRA_URL: '{{.KESTRA_URL | default "http://localhost:8080"}}'
+  KESTRA_USER: '{{.KESTRA_USER | default "admin@kestra.io"}}'
+  KESTRA_PASSWORD: '{{.KESTRA_PASSWORD | default "Kestr!!a123"}}'
+  KESTRA_AUTH: '{{.KESTRA_USER | default "admin@kestra.io"}}:{{.KESTRA_PASSWORD | default "Kestr!!a123"}}'
 
+# ─────────────────────────────────────────────
+# CORE — Infrastructure
+# ─────────────────────────────────────────────
 tasks:
-  docker-compose:
-    desc: Lancement de kestra avec docker-compose
+  up:
+    desc: "Démarrer Kestra (Docker Compose)"
+    dir: core
     cmds:
-      - docker-compose up -d
-    silent: true
+      - docker compose up -d
+      - echo "→ Kestra disponible sur {{.KESTRA_URL}}"
 
   down:
-    desc: Arrêter les services Kestra
+    desc: "Stopper Kestra"
+    dir: core
     cmds:
-      - docker-compose down
-    silent: true
+      - docker compose down
 
-  down-prune:
-    desc: Arrêter et supprimer les volumes Kestra
+  down:prune:
+    desc: "Stopper Kestra et supprimer les volumes (DANGER)"
+    dir: core
     cmds:
-      - docker-compose down -v
-    silent: true
+      - docker compose down -v
 
   restart:
-    desc: Redémarrer les services Kestra
+    desc: "Redémarrer tous les services"
+    dir: core
     cmds:
-      - docker-compose restart
-    silent: true
+      - docker compose restart
 
   logs:
-    desc: Afficher les logs de Kestra
+    desc: "Logs en temps réel (SERVICE=kestra-worker pour filtrer)"
+    dir: core
     cmds:
-      - docker-compose logs -f
-    silent: false
+      - docker compose logs -f {{.SERVICE}}
 
   ps:
-    desc: Lister les conteneurs Kestra
+    desc: "Status des conteneurs"
+    dir: core
     cmds:
-      - docker-compose ps
-    silent: false
+      - docker compose ps
 
-  prune-volumes:
-    desc: Supprimer tous les volumes non utilisés (danger)
+  health:
+    desc: "Vérifier que l'API Kestra répond"
     cmds:
-      - docker volume prune -f
-    silent: false
+      - |
+        echo -n "→ Health check {{.KESTRA_URL}} ... "
+        status=$(curl -s -o /dev/null -w "%{http_code}" \
+          "{{.KESTRA_URL}}/api/v1/flows/search?page=1&size=1" \
+          -u "{{.KESTRA_AUTH}}")
+        if [ "$status" = "200" ]; then
+          echo "✓ OK"
+        else
+          echo "✗ FAILED (HTTP $status)"
+          exit 1
+        fi
+
+  # ─────────────────────────────────────────────
+  # FLOWS — Validation
+  # ─────────────────────────────────────────────
+  flows:validate:
+    desc: "Valider tous les flows via l'API Kestra (dry-run)"
+    cmds:
+      - |
+        echo "=== Validation des flows ==="
+        failed=0
+        for flow in $(find {{.FLOWS_DIR}} -name "*.yaml" | sort); do
+          echo -n "  → $flow ... "
+          response=$(curl -s -w "\n%{http_code}" \
+            -X POST "{{.KESTRA_URL}}/api/v1/flows/validate" \
+            -H "Content-Type: application/x-yaml" \
+            -u "{{.KESTRA_AUTH}}" \
+            --data-binary @"$flow")
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -1)
+          if [ "$http_code" = "200" ]; then
+            echo "✓"
+          else
+            echo "✗ (HTTP $http_code)"
+            echo "    $body"
+            failed=$((failed+1))
+          fi
+        done
+        if [ $failed -gt 0 ]; then
+          echo "✗ $failed flow(s) invalide(s)"
+          exit 1
+        fi
+        echo "✓ Tous les flows sont valides"
+
+  # ─────────────────────────────────────────────
+  # FLOWS — Déploiement local
+  # ─────────────────────────────────────────────
+  flows:deploy:
+    desc: "Déployer tous les flows en local"
+    cmds:
+      - task: flows:deploy:uc1
+      - echo "✓ Tous les flows déployés sur {{.KESTRA_URL}}"
+
+  flows:deploy:uc1:
+    desc: "UC1 — hello-world"
+    cmds:
+      - task: _deploy-dir
+        vars: { DIR: "{{.FLOWS_DIR}}/hello-world" }
+
+  # ─────────────────────────────────────────────
+  # SECRETS — Kestra Secret Store
+  # ─────────────────────────────────────────────
+  secrets:set:
+    desc: "Push les secrets depuis .env.secrets → Kestra (NAMESPACE=demo.finance task secrets:set)"
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "demo.finance"}}'
+    cmds:
+      - |
+        if [ ! -f .env.secrets ]; then
+          echo "✗ Fichier .env.secrets introuvable"
+          echo "  Créez-le depuis .env.secrets.example : cp .env.secrets.example .env.secrets"
+          exit 1
+        fi
+        echo "=== Push secrets → namespace {{.NAMESPACE}} ==="
+        while IFS='=' read -r key value; do
+          [[ "$key" =~ ^#.*$ ]] && continue
+          [[ -z "$key" ]] && continue
+          echo -n "  → $key ... "
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X PUT "{{.KESTRA_URL}}/api/v1/namespaces/{{.NAMESPACE}}/secrets/$key" \
+            -H "Content-Type: application/json" \
+            -u "{{.KESTRA_AUTH}}" \
+            -d "\"$value\"")
+          echo "HTTP $http_code"
+        done < .env.secrets
+        echo "✓ Secrets pushés vers {{.NAMESPACE}}"
+
+  secrets:list:
+    desc: "Lister les secrets d'un namespace (NAMESPACE=demo.finance task secrets:list)"
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "demo.finance"}}'
+    cmds:
+      - |
+        curl -s "{{.KESTRA_URL}}/api/v1/namespaces/{{.NAMESPACE}}/secrets" \
+          -u "{{.KESTRA_AUTH}}" | python3 -m json.tool
+
+  secrets:set:all:
+    desc: "Push les secrets pour tous les namespaces (lit .env.secrets)"
+    cmds:
+      - task: secrets:set
+        vars: { NAMESPACE: "demo.finance" }
+      - task: secrets:set
+        vars: { NAMESPACE: "demo.platform" }
+      - task: secrets:set
+        vars: { NAMESPACE: "demo.batch" }
+
+  # ─────────────────────────────────────────────
+  # DEPLOY — Remote (via SSH)
+  # ─────────────────────────────────────────────
+  deploy:remote:
+    desc: "Déployer les flows sur instance distante via SSH (SSH_HOST, SSH_USER, SSH_KEY_PATH requis)"
+    cmds:
+      - |
+        if [ -z "{{.SSH_HOST}}" ]; then
+          echo "✗ SSH_HOST non défini dans .env.local"
+          exit 1
+        fi
+        echo "=== Déploiement remote → {{.SSH_HOST}} ==="
+        # 1. Sync des flows vers le serveur
+        echo "→ Sync flows..."
+        rsync -avz --delete --exclude="*.test.yaml" \
+          -e "ssh -i {{.SSH_KEY_PATH}} -o StrictHostKeyChecking=no" \
+          {{.FLOWS_DIR}}/ \
+          {{.SSH_USER}}@{{.SSH_HOST}}:/tmp/kestra-flows/
+        # 2. Deploy via API Kestra sur le serveur distant
+        echo "→ Deploy via API distante..."
+        ssh -i {{.SSH_KEY_PATH}} \
+          -o StrictHostKeyChecking=no \
+          {{.SSH_USER}}@{{.SSH_HOST}} \
+          "find /tmp/kestra-flows -name '*.yaml' | sort | while read f; do \
+            echo -n \"  → \$f ... \"; \
+            code=\$(curl -s -o /dev/null -w '%{http_code}' \
+              -X POST '{{.KESTRA_REMOTE_URL}}/api/v1/flows' \
+              -H 'Content-Type: application/x-yaml' \
+              -u '{{.KESTRA_REMOTE_USER}}:{{.KESTRA_REMOTE_PASSWORD}}' \
+              --data-binary @\$f); \
+            echo \"HTTP \$code\"; \
+          done"
+        echo "✓ Déploiement remote terminé"
+
+  # ─────────────────────────────────────────────
+  # UTILS — Trigger manuel / status
+  # ─────────────────────────────────────────────
+  flow:run:
+    desc: "Déclencher un flow manuellement (NAMESPACE=... FLOW_ID=... task flow:run)"
+    cmds:
+      - task: _trigger-flow
+        vars:
+          NAMESPACE: "{{.NAMESPACE}}"
+          FLOW_ID: "{{.FLOW_ID}}"
+
+  flow:status:
+    desc: "Status des dernières exécutions (NAMESPACE=... FLOW_ID=... task flow:status)"
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "demo.finance"}}'
+      FLOW_ID: '{{.FLOW_ID | default "exchange-rates-pipeline"}}'
+    cmds:
+      - |
+        curl -s "{{.KESTRA_URL}}/api/v1/executions?namespace={{.NAMESPACE}}&flowId={{.FLOW_ID}}&size=5" \
+          -u "{{.KESTRA_AUTH}}" | python3 -m json.tool
+
+  # ─────────────────────────────────────────────
+  # INTERNAL — helpers privés
+  # ─────────────────────────────────────────────
+  _deploy-dir:
+    internal: true
+    cmds:
+      - |
+        echo "  [deploy] {{.DIR}}"
+        for flow in $(find {{.DIR}} -maxdepth 1 -name "*.yaml" | sort); do
+          echo -n "    → $(basename $flow) ... "
+
+          # Extraire namespace et id depuis le YAML (pour le PUT si besoin)
+          ns=$(grep -m1 "^namespace:" "$flow" | awk '{print $2}' | tr -d '"')
+          id=$(grep -m1 "^id:" "$flow" | awk '{print $2}' | tr -d '"')
+
+          # Étape 1 : POST (création)
+          response=$(curl -s -w "\n%{http_code}" \
+            -X POST "{{.KESTRA_URL}}/api/v1/flows" \
+            -H "Content-Type: application/x-yaml" \
+            -u "{{.KESTRA_AUTH}}" \
+            --data "$(cat $flow)")
+          http_code=$(echo "$response" | tail -1)
+
+          if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+            echo "✓ créé ($http_code)"
+
+          elif [ "$http_code" = "422" ]; then
+            # Étape 2 : Flow existant → PUT (mise à jour)
+            response=$(curl -s -w "\n%{http_code}" \
+              -X PUT "{{.KESTRA_URL}}/api/v1/flows/$ns/$id" \
+              -H "Content-Type: application/x-yaml" \
+              -u "{{.KESTRA_AUTH}}" \
+              --data "$(cat $flow)")
+            http_code=$(echo "$response" | tail -1)
+
+            if [ "$http_code" = "200" ]; then
+              revision=$(echo "$response" | head -1 | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); print('rev', d.get('revision','?'))" 2>/dev/null)
+              echo "✓ mis à jour ($revision)"
+            else
+              echo "✗ PUT HTTP $http_code"
+              echo "$response" | head -1
+              exit 1
+            fi
+
+          else
+            echo "✗ POST HTTP $http_code"
+            echo "$response" | head -1
+            exit 1
+          fi
+        done
+
+  _trigger-flow:
+    internal: true
+    cmds:
+      - |
+        echo -n "  [trigger] {{.NAMESPACE}}/{{.FLOW_ID}} ... "
+        result=$(curl -s \
+          -X POST "{{.KESTRA_URL}}/api/v1/executions/{{.NAMESPACE}}/{{.FLOW_ID}}" \
+          -u "{{.KESTRA_AUTH}}")
+        exec_id=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id','error'))" 2>/dev/null)
+        echo "execution: $exec_id"
+        echo "  → {{.KESTRA_URL}}/ui/executions/{{.NAMESPACE}}/{{.FLOW_ID}}/$exec_id"
